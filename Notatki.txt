@@ -1,0 +1,105 @@
+Mutex (lub inna synchronizacja) jest wymagany wtedy i tylko wtedy, gdy występuje Data Race, czyli:
+    Co najmniej dwa wątki uzyskują dostęp do tego samego obszaru pamięci.
+    Robią to w tym samym czasie.
+    Co najmniej jeden z nich wykonuje zapis.
+
+    C++
+
+// Jedna linijka zamiast pięciu!
+future<int> f = async(launch::async, []() { 
+    return 42; // Po prostu zwracasz wartość!
+});
+// ...
+int wynik = f.get(); // get() nadal czeka na wynik
+
+3. Launch Policies – Ty decydujesz o strategii
+
+Przy std::async możesz określić, jak system ma potraktować Twoje zadanie:
+
+    std::launch::async: Wymusza stworzenie nowego wątku. Zadanie rusza natychmiast.
+
+    std::launch::deferred: Zadanie jest "leniwe". Nie ruszy, dopóki nie zawołasz .get() lub .wait(). Wykona się wtedy w bieżącym wątku (oszczędność zasobów).
+
+    std::launch::async | std::launch::deferred (Domyślne): System sam wybiera, co jest lepsze w danej chwili.
+
+    Scenariusz	Najlepszy wybór	Dlaczego?
+Tylko odczyt	Brak mutexa	Brak narzutu (overhead), pełna prędkość.
+90% Czytania / 10% Pisania	shared_mutex	Pozwalasz setkom czytelników działać naraz, blokując ich tylko na rzadkie chwile zapisu.
+50% Czytania / 50% Pisania	Zwykły mutex	shared_mutex jest bardziej skomplikowany i wolniejszy "w obsłudze" niż zwykły mutex. Przy częstym pisaniu zysk z równoległego czytania znika przez narzut na zarządzanie blokadą.
+Notatka: Deadlocki (Zakleszczenia) w C++
+1. Definicja
+
+Deadlock (Zakleszczenie) to sytuacja, w której co najmniej dwa wątki zostają zablokowane na zawsze, ponieważ każdy z nich czeka na zasób (mutex), który jest trzymany przez ten drugi. Program „wisi”, nie wykonuje żadnych operacji i nie zgłasza błędu – po prostu przestaje reagować.
+2. Mechanizm „Uścisku Śmierci”
+
+Aby doszło do deadlocka, najczęściej muszą wystąpić cztery warunki, ale w praktyce programistycznej sprowadza się to do cyklicznego oczekiwania:
+
+    Wątek A blokuje Mutex 1.
+
+    Wątek B blokuje Mutex 2.
+
+    Wątek A próbuje zablokować Mutex 2 (i musi czekać na Wątek B).
+
+    Wątek B próbuje zablokować Mutex 1 (i musi czekać na Wątek A).
+
+Wynik: Pętla oczekiwania, której nie da się przerwać bez ubicia procesu.
+3. Kod-Pułapka (Przykład Bankowy)
+
+Najłatwiej o deadlock przy operacjach na dwóch obiektach tego samego typu (np. przelew między kontami):
+C++
+
+void transfer(Account& from, Account& to, int amount) {
+    lock_guard<mutex> lock1(from.mtx); // Wątek 1 bierze konto A
+    // --- Tutaj występuje przełączenie wątków ---
+    lock_guard<mutex> lock2(to.mtx);   // Wątek 1 chce konto B (zablokowane przez Wątek 2)
+    // ... logika ...
+}
+
+Sztuczne wywołanie: Dodanie this_thread::sleep_for między lockami niemal gwarantuje wystąpienie deadlocka w testach.
+4. Jak unikać Deadlocków?
+A. std::scoped_lock (C++17) – Rozwiązanie Rekomendowane
+
+Zamiast blokować mutexy jeden po drugim, blokujemy je „w pakiecie”. Algorytm wewnątrz scoped_lock dba o to, by nie doszło do zakleszczenia (używa techniki deadlock avoidance).
+C++
+
+// Bezpieczne i nowoczesne:
+std::scoped_lock lock(from.mtx, to.mtx);
+
+B. Hierarchia blokad (Lock Ordering)
+
+Zawsze blokuj mutexy w tej samej, ustalonej kolejności (np. zawsze najpierw ten o niższym adresie w pamięci). Jeśli wszystkie wątki przestrzegają tej samej kolejności, cykl oczekiwania nigdy się nie zamknie.
+C. Unikanie trzymania wielu blokad
+
+Staraj się projektować kod tak, aby jeden wątek potrzebował tylko jednego mutexa naraz. Im mniej współdzielonych zasobów potrzebuje wątek w tym samym momencie, tym bezpieczniej.
+5. Złote zasady dla programisty:
+
+    Trzymaj mutexy krótko: Im szybciej puścisz locka, tym mniejsza szansa na kolizję.
+
+    Nigdy nie „śpij” (sleep_for) z zablokowanym mutexem, chyba że masz ku temu bardzo ważny powód.
+
+    Używaj std::scoped_lock, gdy potrzebujesz więcej niż jednego mutexa naraz.
+
+    Stosuj listy inicjalizacyjne w konstruktorach (: pole(wartość)), aby obiekty (w tym mutexy) powstawały w bezpieczny i wydajny sposób.
+
+    1. Rozkład jazdy katastrofy
+Czas	Wątek t1 (transfer(a, b))	Wątek t2 (transfer(b, a))
+Start	from to Antoni, to to Barbara	from to Barbara, to to Antoni
+Krok 1	Blokuje from.mtx (Antoni) ✅	Blokuje from.mtx (Barbara) ✅
+Sen	Śpi 100ms (trzymając Antoniego)	Śpi 100ms (trzymając Barbarę)
+Krok 2	Chce to.mtx (Barbara)...	Chce to.mtx (Antoni)...
+Efekt	CZEKA, bo Barbara jest u t2	CZEKA, bo Antoni jest u t1
+2. Dlaczego Twoja "kolejność" nie zadziałała?
+
+Twoja kolejność w kodzie to:
+
+    Zablokuj "moje" konto (from).
+
+    Zablokuj "twoje" konto (to).
+
+Ale ponieważ w t2 wysłałeś konta odwrotnie, to Twoje "moje" jest ich "twoim".
+
+    Dla t1 kolejność to: A potem B.
+
+    Dla t2 kolejność to: B potem A.
+
+To jest właśnie definicja odwrotnej kolejności blokowania. Każdy z wątków zdążył wykonać swój "Krok 1" (bo mutexy były wolne), ale żaden nie może zrobić "Kroku 2", bo ten drugi już tam siedzi i nie zamierza wyjść, dopóki sam nie skończy.
