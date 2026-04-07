@@ -103,3 +103,78 @@ Ale ponieważ w t2 wysłałeś konta odwrotnie, to Twoje "moje" jest ich "twoim"
     Dla t2 kolejność to: B potem A.
 
 To jest właśnie definicja odwrotnej kolejności blokowania. Każdy z wątków zdążył wykonać swój "Krok 1" (bo mutexy były wolne), ale żaden nie może zrobić "Kroku 2", bo ten drugi już tam siedzi i nie zamierza wyjść, dopóki sam nie skończy.
+
+std::jthread (Joining Thread)
+
+Nowoczesny następca std::thread. Rozwiązuje dwa największe problemy starego standardu: zapominanie o join() oraz brak oficjalnego sposobu na przerywanie wątku.
+
+    RAII (Automatyczny Join): Destruktor jthread automatycznie wywołuje join(). Program nie wybuchnie błędem std::terminate, jeśli zapomnisz o sprzątaniu.
+
+    Stop Tokeny: Wbudowany mechanizm "uprzejmego" przerywania pracy.
+
+        Wątek przyjmuje std::stop_token.
+
+        W pętli sprawdza st.stop_requested().
+
+        Z zewnątrz wywołujemy t.request_stop().
+
+2. std::latch (Zasuwa)
+
+Mechanizm synchronizacji typu „wszyscy na start”. Jest jednorazowy.
+
+    Zastosowanie: Czekanie, aż grupa wątków zakończy fazę inicjalizacji.
+
+    Metoda arrive_and_wait(): Zmniejsza licznik o 1 i blokuje wątek, dopóki licznik nie osiągnie 0.
+
+    Przykład: Start wyścigu bolidów – żaden nie ruszy, dopóki ostatni nie zamelduje się na linii.
+
+3. std::barrier (Bariera)
+
+Podobna do latch, ale wielorazowa. Służy do synchronizacji pracy etapowej.
+
+    Fazy: Wątki wykonują Etap 1, czekają na barierze, wykonują Etap 2, znowu czekają itd.
+
+    Completion Function: Można podać funkcję (lambda), która wykona się automatycznie, gdy wszyscy dotrą do bariery, ale zanim ruszą dalej (np. do wypisania raportu z etapu).
+
+    Zastosowanie: Algorytmy równoległe, symulacje fizyczne, gry (np. faza fizyki -> faza AI -> faza grafiki).
+
+4. std::counting_semaphore (Semafor)
+
+Klasyczny licznik zasobów. Pozwala ograniczyć dostęp do zasobu dla określonej liczby wątków jednocześnie.
+
+    acquire(): Zabiera "bilet" (zmniejsza licznik). Jeśli licznik wynosi 0, wątek czeka.
+
+    release(): Oddaje "bilet" (zwiększa licznik), budząc jednego z czekających.
+
+    Zastosowanie: Ograniczanie liczby połączeń z bazą danych, limit osób w biurze, dostęp do ograniczonej liczby licencji sprzętowych.
+
+5. std::osyncstream (Zsynchronizowany cout)
+
+Rozwiązuje problem "rozjeżdżających się" napisów w konsoli bez używania mutexów.
+
+    Buforuje cały strumień danych i wypisuje go jako jedną, atomową operację w momencie zniszczenia obiektu osyncstream.
+
+    Zapobiega mieszaniu się liter z różnych wątków (np. Pracownik 1Pracownik 2 gotowy gotowy).
+
+💡 Złote zasady Modernisty C++
+Zasada LIFO (Kolejność na stosie)
+
+Zawsze deklaruj obiekty w tej kolejności:
+
+    Zasoby (latch, barrier, semaphore, mutex).
+
+    Wątki (vector z jthread).
+
+Dlaczego? C++ niszczy obiekty w odwrotnej kolejności (LIFO). Dzięki temu wątki zostaną zamknięte (join) zanim znikną zasoby, z których te wątki jeszcze korzystają. Zapobiega to błędom Segmentation Fault.
+Przekazywanie przez referencję
+
+Obiekty synchronizacji (latch, barrier) są niekopiowalne. Do konstruktora wątku zawsze przekazuj je przez std::ref(obiekt).
+Kiedy co wybrać?
+
+    latch -> Inicjalizacja (raz a dobrze).
+
+    barrier -> Pętle z etapami (cyklicznie).
+
+    semaphore -> Pula zasobów (limit wejść).
+
+    jthread -> Zawsze zamiast zwykłego thread.
